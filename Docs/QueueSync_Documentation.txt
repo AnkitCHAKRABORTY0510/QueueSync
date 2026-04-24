@@ -1,0 +1,587 @@
+
+
+
+
+QueueSync
+Engine
+Complete Engineering Documentation Pack
+
+
+Version 1.0  |  April 2026
+Classification: Internal Engineering
+
+1. Executive Summary
+
+1.1 What Is QueueSync?
+QueueSync is a native macOS productivity utility that enables reliable, queued file and folder transfer from macOS to Linux desktops using SSH and rsync. It is designed to eliminate the friction of repetitive manual transfers while providing queue management, automatic retries, progress visibility, and persistent state.
+
+1.2 Problem Statement
+Current file transfer workflows on macOS require repeated manual scp or rsync commands with no queue management, no retry logic, and no visibility into transfer progress. The process breaks down at scale:
+	•	No queue — each transfer must be manually triggered
+	•	No retries — network failure means starting over
+	•	No persistence — terminal closes and state is lost
+	•	No progress — no visibility into large transfer status
+	•	No history — no record of what was transferred
+
+1.3 Solution
+QueueSync wraps rsync over SSH in a queue-managed, retry-capable, persistent engine. The user adds files, starts the worker once, and QueueSync handles the rest — sequentially, reliably, with full logging.
+
+1.4 Strategic Context (5 GB Storage Constraint)
+Engineering Decision: CLI-First Architecture
+Free Storage Available: ~5 GB
+Full Xcode Requirement: 15 GB – 25 GB minimum
+QueueSync Engine footprint: < 200 MB total
+Decision: Build production-grade CLI engine first. Add SwiftUI GUI in Phase 2 when storage is available.
+Outcome: Same core architecture, maximum ROI with current constraints.
+
+1.5 Product Vision
+AirDrop simplicity. SSH security. Queue reliability. Linux compatibility.
+
+2. Product Requirements Document (PRD)
+
+2.1 Purpose
+This document defines the goals, features, and success criteria for QueueSync Engine v0.1 through v1.0.
+2.2 Goals
+	•	Provide a reliable queued transfer system from macOS to Linux
+	•	Require no GUI or Xcode in the initial build phase
+	•	Be installable as a single CLI binary
+	•	Persist queue state across application restarts
+	•	Transfer files sequentially with automatic retry on failure
+2.3 Non-Goals (Phase 1)
+	•	No SwiftUI graphical interface
+	•	No iOS/iPadOS support
+	•	No Windows or Android support
+	•	No LAN peer discovery
+	•	No cloud sync (iCloud, Dropbox)
+2.4 User Stories
+ID
+As a...
+I want to...
+So that...
+US-01
+Developer
+Add a file to the queue
+It transfers without me watching
+US-02
+Developer
+Pause the queue mid-transfer
+I can free bandwidth
+US-03
+Developer
+See failed items and retry
+Nothing is silently dropped
+US-04
+Developer
+View transfer history logs
+I can audit what was sent
+US-05
+Developer
+Resume after app crash
+No work is lost
+
+2.5 Feature Requirements
+MVP Features (v0.1 – v0.3)
+	•	queuesync add <path> — add file or folder to queue
+	•	queuesync list — display queue with statuses
+	•	queuesync start — begin sequential worker
+	•	queuesync pause / resume — pause and resume worker
+	•	queuesync logs — display transfer history
+	•	queuesync clear — clear completed items
+	•	Persistent queue (queue.json survives restarts)
+	•	Auto-retry with exponential backoff (max 3 attempts)
+	•	rsync over SSH for all transfers
+Phase 2 Features (v1.0)
+	•	SwiftUI desktop window
+	•	Finder right-click extension
+	•	macOS notification center integration
+	•	LAN auto-discovery
+	•	Progress graphs and transfer analytics
+2.6 Acceptance Criteria
+Scenario
+Action
+Expected Result
+Add file
+queuesync add file.mp4
+Item appears in queue with status: pending
+Network drop
+SSH disconnects mid-transfer
+Item retried up to 3 times
+App restart
+Kill process, relaunch
+Queue resumes from last state
+1000 item queue
+Add 1000 files, start
+Transfers sequentially, <100 MB RAM
+
+3. Software Requirements Specification (SRS)
+
+3.1 Functional Requirements
+FR-01: Queue Management
+	•	The system shall allow adding individual files to the queue
+	•	The system shall allow adding entire folders (recursive) to the queue
+	•	The system shall persist the queue to disk after every mutation
+	•	The system shall load the queue from disk on startup
+	•	The system shall support reordering queue items
+FR-02: Transfer Execution
+	•	The system shall execute transfers using rsync over SSH
+	•	The system shall execute one transfer at a time (sequential)
+	•	The system shall emit progress events during transfer
+	•	The system shall detect transfer success via rsync exit code
+FR-03: Retry Logic
+	•	On failure, the system shall retry up to 3 times
+	•	Wait time between retries: 5 sec, 10 sec, 20 sec
+	•	After 3 failures, item status shall be set to 'failed'
+	•	Failed items shall remain in queue and be retryable manually
+FR-04: Persistence
+	•	queue.json — active queue items
+	•	history.json — completed/failed transfer records
+	•	config.json — SSH host, user, destination path
+	•	logs.txt — timestamped event log
+FR-05: Logging
+	•	Every queue event shall produce a timestamped log entry
+	•	Log format: YYYY-MM-DD HH:mm  EVENT  filename
+	•	Logs shall never contain passwords or secrets
+3.2 Non-Functional Requirements
+ID
+Requirement
+Target
+NFR-01
+Application startup time
+< 1 second
+NFR-02
+Queue item add latency
+< 50 ms
+NFR-03
+Memory usage at idle
+< 30 MB
+NFR-04
+Memory usage during transfer
+< 100 MB
+NFR-05
+Maximum tested queue size
+1000 items
+NFR-06
+Total project disk footprint
+< 200 MB
+NFR-07
+Transfer protocol security
+SSH encrypted
+NFR-08
+Credential storage method
+SSH key only
+3.3 System Constraints
+	•	macOS 12.0+ (Monterey or later) required
+	•	rsync must be available on host system (pre-installed on macOS)
+	•	SSH key-based authentication must be configured prior to use
+	•	Linux receiver must have OpenSSH server running
+	•	Swift 5.7+ required for build
+
+4. High-Level Design (HLD)
+
+4.1 System Overview
+QueueSync is a layered Swift CLI application. Each layer has a single responsibility and communicates through defined interfaces. This separation ensures the GUI layer (Phase 2) can be added without modifying core logic.
+
+4.2 Layer Architecture
+QueueSync — Layered Architecture
+[ CLI Interface Layer ]  ← User commands: add, list, start, pause, logs
+         ↓
+[ Queue Manager ]        ← Add, remove, reorder, status management
+         ↓
+[ Transfer Manager ]     ← rsync execution, progress parsing, result handling
+         ↓
+[ Retry Engine ]         ← Failure detection, backoff scheduling, retry dispatch
+         ↓
+[ Storage Layer ]        ← queue.json, history.json, config.json read/write
+         ↓
+[ Logger ]               ← Timestamped event log (logs.txt)
+         ↓
+[ Config ]               ← SSH host, user, destination path
+
+4.3 External System Boundary
+QueueSync communicates with a single external system: a Linux host running OpenSSH Server. All communication uses the rsync-over-SSH protocol. No other network dependencies exist.
+External Boundary
+macOS Host  →  [ SSH / rsync ]  →  Linux Desktop
+                                    OpenSSH Server
+                                    Incoming Folder  (/home/user/Desktop/Incoming/)
+
+4.4 Key Design Decisions
+Decision
+Choice
+Rationale
+Transfer protocol
+rsync over SSH
+Encrypted, resumable, macOS built-in
+Concurrency model
+Sequential (single worker)
+Predictable bandwidth, simpler retry logic
+Persistence format
+JSON files
+Human-readable, debuggable, no DB dependency
+Language
+Swift
+Native macOS, fast, type-safe, no runtime install
+Build system
+Swift Package Manager
+CLI tools only, no Xcode needed
+Auth method
+SSH key-based
+No plaintext password storage, industry standard
+
+5. Low-Level Design (LLD)
+
+5.1 Module Breakdown
+Module
+File
+Responsibility
+Entry Point
+main.swift
+Parse CLI args, route to commands
+Data Models
+Models.swift
+QueueItem, Status enum, Config struct
+Queue Manager
+QueueManager.swift
+CRUD on queue, state transitions, ordering
+Transfer Mgr
+TransferManager.swift
+rsync subprocess, stdout parsing, exit codes
+Storage
+Storage.swift
+JSON encode/decode, file read/write
+Logger
+Logger.swift
+Timestamped log writes to logs.txt
+Config
+Config.swift
+Load/save config.json, defaults
+
+5.2 Transfer Worker Loop
+Worker Execution Flow
+1.  Load queue from queue.json
+2.  Filter items with status == .pending
+3.  Take first item
+4.  Set status = .transferring, save queue
+5.  Execute rsync subprocess
+6.  Parse stdout for progress (bytes, percentage)
+7a. Exit code 0  →  status = .completed, log SUCCESS, remove from queue
+7b. Exit code != 0  →  increment retries
+       retries < 3  →  wait (5s / 10s / 20s), goto step 5
+       retries == 3  →  status = .failed, log FAILED
+8.  Take next pending item, repeat
+9.  Queue empty → worker exits
+
+5.3 rsync Command Template
+rsync -avz --partial --progress --rsh='ssh -o StrictHostKeyChecking=no' \
+  <source_path> <user>@<host>:<destination_path>
+
+Flags used:
+	•	-a  Archive mode (preserves permissions, timestamps, symlinks)
+	•	-v  Verbose output (enables progress parsing)
+	•	-z  Compression in transit
+	•	--partial  Keep partially transferred files on failure (enables resume)
+	•	--progress  Emit byte progress to stdout
+
+5.4 Retry Backoff Schedule
+Attempt
+Result
+Wait Before Next
+Final Status
+1
+Fail
+5 seconds
+retrying
+2
+Fail
+10 seconds
+retrying
+3
+Fail
+—
+failed
+Any
+Success
+—
+completed
+
+6. Data Models & Schema
+
+6.1 QueueItem Schema (queue.json)
+{
+  "id":        "uuid-v4-string",
+  "path":      "/Users/mac/Videos/movie.mp4",
+  "type":      "file" | "folder",
+  "status":    "pending" | "transferring" | "completed" | "failed" | "paused",
+  "progress":  0-100,
+  "retries":   0-3,
+  "createdAt": "2026-04-24T12:00:00Z",
+  "startedAt": "2026-04-24T12:01:00Z",   // optional
+  "finishedAt":"2026-04-24T12:03:00Z"    // optional
+}
+
+6.2 Config Schema (config.json)
+{
+  "host":        "192.168.1.10",
+  "user":        "linuxuser",
+  "destination": "/home/linuxuser/Desktop/Incoming/",
+  "sshKeyPath":  "~/.ssh/id_rsa",
+  "maxRetries":  3
+}
+
+6.3 History Item Schema (history.json)
+{
+  "id":         "uuid-v4-string",
+  "path":       "/Users/mac/Videos/movie.mp4",
+  "status":     "completed" | "failed",
+  "startedAt":  "2026-04-24T12:01:00Z",
+  "finishedAt": "2026-04-24T12:03:00Z",
+  "retries":    0,
+  "sizeBytes":  104857600
+}
+
+6.4 Log Format (logs.txt)
+2026-04-24 12:00  ADD        movie.mp4
+2026-04-24 12:01  START      movie.mp4
+2026-04-24 12:01  PROGRESS   movie.mp4  45%
+2026-04-24 12:03  SUCCESS    movie.mp4
+2026-04-24 12:03  START      folder/
+2026-04-24 12:04  RETRY(1)   folder/
+2026-04-24 12:05  FAILED     folder/
+6.5 Status State Machine
+QueueItem Status Transitions
+pending  →  transferring   (worker picks item)
+transferring  →  completed  (rsync exit 0)
+transferring  →  retrying   (rsync exit != 0, retries < 3)
+retrying  →  transferring   (after backoff wait)
+retrying  →  failed         (retries == 3)
+transferring  →  paused     (user issues pause command)
+paused  →  transferring     (user issues resume command)
+
+7. CLI API & Commands Reference
+
+7.1 Command Table
+Command
+Syntax
+Description
+add
+queuesync add <path>
+Add file or folder to queue
+list
+queuesync list
+Display all queue items with status
+start
+queuesync start
+Start sequential transfer worker
+pause
+queuesync pause
+Pause worker after current transfer
+resume
+queuesync resume
+Resume paused worker
+logs
+queuesync logs
+Print recent log entries
+clear
+queuesync clear
+Remove completed items from queue
+config set
+queuesync config set host <ip>
+Set SSH destination host
+status
+queuesync status
+Show worker state and queue summary
+
+7.2 Exit Codes
+Code
+Meaning
+0
+Success
+1
+General error (queue empty, invalid args)
+2
+Config not found — run queuesync config set first
+3
+SSH connection failed
+4
+File not found at given path
+
+8. Project Folder Structure
+
+8.1 Repository Layout
+QueueSync/
+├── Package.swift
+├── Sources/
+│   └── QueueSync/
+│       ├── main.swift          ← CLI entry point
+│       ├── Models.swift        ← QueueItem, Status, Config
+│       ├── QueueManager.swift  ← Queue CRUD operations
+│       ├── TransferManager.swift ← rsync subprocess
+│       ├── Storage.swift       ← JSON persistence
+│       ├── Logger.swift        ← Event logging
+│       └── Config.swift        ← Configuration load/save
+├── Data/                       ← Runtime data (gitignored)
+│   ├── queue.json
+│   ├── history.json
+│   └── logs.txt
+├── Tests/
+│   └── QueueSyncTests/
+│       ├── QueueManagerTests.swift
+│       └── StorageTests.swift
+├── Scripts/
+│   └── install.sh              ← Local install script
+├── Docs/                       ← This documentation
+└── README.md
+
+8.2 Data Directory Notes
+	•	Data/ directory is excluded from git via .gitignore
+	•	queue.json is auto-created on first queuesync add command
+	•	logs.txt is append-only and rotates at 10 MB
+	•	config.json is created on first queuesync config set command
+
+9. Development Roadmap
+
+9.1 Sprint Plan
+Sprint
+Version
+Deliverables
+Status
+1
+v0.1-alpha
+Package setup, QueueItem model, add/list/save
+In Progress
+2
+v0.1-beta
+rsync execution, single file transfer
+Planned
+3
+v0.2
+Worker loop, retry logic, backoff
+Planned
+4
+v0.3
+Progress parsing, pause/resume, event bus
+Planned
+5
+v0.4
+Polished CLI, install script, README
+Planned
+6
+v1.0
+SwiftUI GUI (requires Xcode), Finder extension
+Phase 2
+
+9.2 Milestone Summary
+	•	v0.1  —  Queue Engine: Add, list, persist, basic transfer
+	•	v0.2  —  Reliable Engine: Retry, worker loop, logging
+	•	v0.3  —  Complete CLI: Pause, resume, progress, all commands
+	•	v1.0  —  Desktop App: SwiftUI, Finder integration, notifications
+
+10. Risks & Mitigations
+
+Risk
+Severity
+Probability
+Mitigation
+Network failure mid-transfer
+High
+High
+--partial flag + retry backoff
+Linux host offline
+Medium
+Medium
+Queue waits, items remain pending
+Disk full on receiver
+High
+Low
+rsync error detected, item marked failed with message
+App crash during transfer
+High
+Low
+Queue persisted to disk, resumes on restart
+SSH key not configured
+Medium
+Medium
+Config validation on start, clear error message
+Large file >10 GB
+Low
+Low
+rsync --partial handles resume natively
+macOS storage < 5 GB
+High
+Current
+CLI-first approach, no Xcode needed, <200 MB project
+
+11. Security Design
+
+11.1 Transport Security
+	•	All transfers encrypted via SSH (AES-256 in transit)
+	•	rsync tunneled through SSH — no plain-text data on network
+	•	SSH host key verification enforced by default
+11.2 Authentication
+	•	SSH key-based authentication required
+	•	No passwords stored in config.json or logs
+	•	Private key path stored in config — key itself never read by app
+11.3 Log Security
+	•	Logs contain only: timestamps, event names, file paths
+	•	Logs never contain: passwords, SSH keys, or secrets
+	•	Log files stored in local Data/ directory (not synced)
+11.4 File Permission Model
+	•	queue.json, config.json set to chmod 600 on creation
+	•	Only the running user can read/write data files
+
+12. Future Versions
+
+12.1 v1.0 — Desktop GUI (Phase 2)
+When internal storage reaches 20+ GB (or when Xcode is installed on an external drive), the following layer will be added on top of the existing engine without any changes to core logic:
+	•	SwiftUI window with queue list, progress bars, status icons
+	•	macOS Finder extension (right-click to add to QueueSync)
+	•	macOS Notification Center alerts on completion/failure
+	•	Transfer speed graph and history analytics
+12.2 v1.1 — LAN Discovery
+	•	Bonjour/mDNS-based receiver discovery on local network
+	•	Auto-populate destination host from discovered peers
+	•	Multi-destination support (send to multiple Linux hosts)
+12.3 v2.0 — Pro Features
+	•	Scheduling: send at time / bandwidth throttle
+	•	Filter rules: auto-add matching files from watched folder
+	•	Sync mode: two-way sync with conflict resolution
+	•	REST API server mode for remote queue management
+12.4 Monetization Path
+QueueSync can become a paid Mac App Store utility targeting:
+	•	Developers running Mac + Linux workstation setups
+	•	Homelab users transferring media to NAS/Linux servers
+	•	Students in CS/engineering programs
+	•	Creators with media production workflows
+Positioning: 'AirDrop for Linux' — premium CLI-first developer tool
+
+13. Quick Start Guide
+
+Step 1 — Initialize the project
+mkdir QueueSync && cd QueueSync
+swift package init --type executable
+
+Step 2 — Set destination config
+queuesync config set host 192.168.1.10
+queuesync config set user linuxuser
+queuesync config set dest /home/linuxuser/Desktop/Incoming/
+
+Step 3 — Ensure SSH key is authorized on Linux
+ssh-copy-id linuxuser@192.168.1.10
+
+Step 4 — Add files and start
+queuesync add ~/Downloads/movie.mp4
+queuesync add ~/Projects/backup/
+queuesync list
+queuesync start
+
+Step 5 — Monitor
+queuesync logs
+queuesync status
+
+Step 6 — Build the binary
+swift build -c release
+cp .build/release/QueueSync /usr/local/bin/queuesync
+
+
+
+QueueSync Engineering Documentation Pack
+Version 1.0  |  April 2026  |  Internal
