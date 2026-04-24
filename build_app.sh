@@ -45,4 +45,30 @@ echo "🧹 Cleaning up permissions..."
 chmod +x "$APP_BUNDLE_DIR/Contents/MacOS/$APP_NAME"
 
 echo "✅ App Bundle created successfully at: $APP_BUNDLE_DIR"
-echo "You can now right-click this .app file, select 'Compress', and upload the .zip to GitHub Releases!"
+
+echo "💿 Creating DMG Installer..."
+DMG_NAME="QueueSync_Installer.dmg"
+DMG_TMP="Release/dmg_tmp"
+
+# Clean up old DMG
+echo "🧹 Cleaning previous build artifacts..."
+hdiutil detach "/Volumes/QueueSync Installer" -force 2>/dev/null || true
+rm -f "Release/$DMG_NAME"
+rm -rf "$DMG_TMP"
+mkdir -p "$DMG_TMP"
+
+# Copy App to temp folder and add Applications shortcut
+cp -R "$APP_BUNDLE_DIR" "$DMG_TMP/"
+ln -s /Applications "$DMG_TMP/Applications"
+
+# Sync to ensure all files are written
+sync
+
+# Create the DMG
+hdiutil create -volname "QueueSync Installer" -srcfolder "$DMG_TMP" -ov -format UDZO "Release/$DMG_NAME"
+
+# Clean up
+rm -rf "$DMG_TMP"
+
+echo "✨ DMG created successfully at: Release/$DMG_NAME"
+echo "You can now upload the .dmg to GitHub Releases!"
