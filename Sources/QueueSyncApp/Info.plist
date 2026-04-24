@@ -6,6 +6,8 @@
     <string>en</string>
     <key>CFBundleExecutable</key>
     <string>QueueSyncApp</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleIdentifier</key>
     <string>com.queuesync.app</string>
     <key>CFBundleInfoDictionaryVersion</key>
